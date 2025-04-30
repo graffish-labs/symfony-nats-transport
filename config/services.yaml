@@ -1,0 +1,8 @@
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    GraffishLabs\SymfonyNatsTransport\:
+        resource: '../src/*'
+        exclude: '../src/{DependencyInjection,Tests}'

@@ -21,12 +21,15 @@ use Symfony\Component\Uid\Uuid;
 use Exception;
 use LogicException;
 use InvalidArgumentException;
+use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
+use Basis\Nats\Stream\RetentionPolicy;
+use Basis\Nats\Consumer\Configuration as ConsumerConfiguration;
+use Symfony\Component\Messenger\Attribute\AsMessage;
 
 class NatsTransport implements TransportInterface, MessageCountAwareInterface
 {
     private const DEFAULT_OPTIONS = [
         'delay' => 0.001,
-        'consumer' => 'client',
         'batching' => 10,
     ];
 
@@ -35,31 +38,33 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
     protected Stream $stream;
     protected Client $client;
     protected string $topic;
+    protected string $streamName;
     protected array $configuration;
+    protected SerializerInterface $serializer;
 
-    public function __construct(#[\SensitiveParameter] string $dsn, ?array $options = [])
+    public function __construct(#[\SensitiveParameter] string $dsn, SerializerInterface $serializer, array $options = [])
     {
+        $this->serializer = $serializer;
         $this->buildFromDsn($dsn, $options);
     }
+
     public function send(Envelope $envelope): Envelope
     {
         $uuid = (string) Uuid::v4();
         $envelope = $envelope->with(new TransportMessageIdStamp($uuid));
         try {
-            $encodedMessage = igbinary_serialize($envelope);
+            $encodedMessage = $this->serializer->encode($envelope);
+            $this->stream->put($this->streamName.".".$this->topic, $encodedMessage);
         } catch (Exception $e) {
             $realError = $envelope->last(ErrorDetailsStamp::class);
             throw new Exception($realError->getExceptionMessage());
         }
-
-        $this->stream->put($this->topic, $encodedMessage);
         return $envelope;
     }
 
     public function get(): iterable
     {
         $messages = $this->queue->fetchAll($this->configuration['batching']);
-
         $envelopes = [];
 
         /** @var Msg */
@@ -69,7 +74,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
             }
 
             try {
-                $decoded = igbinary_unserialize($message->payload->body);
+                $decoded = $this->serializer->decode(json_decode($message->payload->body, true));
                 $envelope = $decoded->with(new TransportMessageIdStamp($message->replyTo));
                 $envelopes[] = $envelope;
             } catch (Exception $e) {
@@ -110,7 +115,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
 
     private function findReceivedStamp(Envelope $envelope): TransportMessageIdStamp
     {
-        /** @var RedisReceivedStamp|null $redisReceivedStamp */
+        /** @var TransportMessageIdStamp|null $receivedStamp */
         $receivedStamp = $envelope->last(TransportMessageIdStamp::class);
 
         if (null === $receivedStamp) {
@@ -125,12 +130,10 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
         if (false === $components = parse_url($dsn)) {
             throw new InvalidArgumentException('The given NATS DSN is invalid.');
         }
-
         $connectionCredentials = [
             'host' => $components['host'],
             'port' => $components['port'] ?? 4222,
         ];
-
         $path = $components['path'];
 
         if (empty($path) || strlen($path) < 4) {
@@ -141,6 +144,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
         if (isset($components['query'])) {
             parse_str($components['query'], $query);
         }
+        $explodedDsn = explode('/', $dsn);
 
         $configuration = [];
         $configuration += $options + $query + self::DEFAULT_OPTIONS;
@@ -156,15 +160,24 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
             $clientConnectionSettings['user'] = $components['user'];
             $clientConnectionSettings['pass'] = $components['pass'];
         }
-
-        list($stream, $topic) = explode('/', substr($components['path'], 1));
+        $this->streamName = end($explodedDsn);
+        $this->topic = $options['transport_name'];
         $nastConfig = new Configuration($clientConnectionSettings);
         $nastConfig->setDelay(floatval($configuration['delay']));
         $client = new Client($nastConfig);
-        $stream = $client->getApi()->getStream($stream);
-        $consumer = $stream->getConsumer($configuration['consumer']);
+
+        $stream = $client->getApi()->getStream($this->streamName);
+        $stream->getConfiguration()->setRetentionPolicy(RetentionPolicy::WORK_QUEUE)
+            ->setSubjects([$this->streamName.".".$this->topic]);
+        $stream->createIfNotExists();
+
+        $consumer = $stream->createEphemeralConsumer(new ConsumerConfiguration(
+            stream: $this->streamName,
+            name: $this->topic,
+        ));
+        $consumer->getConfiguration()->setSubjectFilter($this->streamName.".".$this->topic);
         $consumer->setBatching($configuration['batching']);
-        $this->topic = $topic;
+        
         $this->consumer = $consumer;
         $this->client = $client;
         $this->stream = $stream;

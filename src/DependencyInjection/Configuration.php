@@ -11,19 +11,7 @@ class Configuration implements ConfigurationInterface
 {
     public function getConfigTreeBuilder(): TreeBuilder
     {
-        $treeBuilder = new TreeBuilder('nats');
-
-        $treeBuilder->getRootNode()
-            ->children()
-                ->booleanNode('enabled')->defaultTrue()->end()
-                ->arrayNode('client')
-                    ->children()
-                        ->scalarNode('base_uri')->isRequired()->end()
-                        ->scalarNode('api_key')->isRequired()->end()
-                    ->end()
-                ->end()
-            ->end();
-
+        $treeBuilder = new TreeBuilder('graffish_labs_symfony_nats_transport');
         return $treeBuilder;
     }
 } 
