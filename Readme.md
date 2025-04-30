@@ -24,4 +24,4 @@ composer require graffish-labs/symfony-nats-transport
 
 ## License
 
-This package is proprietary software. All rights reserved.
+This package is open-source software licensed under the MIT license. See the LICENSE file for details.

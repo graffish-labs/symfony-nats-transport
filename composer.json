@@ -2,7 +2,7 @@
     "name": "graffish-labs/symfony-nats-transport",
     "description": "NATS transport for Symfony applications",
     "type": "library",
-    "license": "proprietary",
+    "license": "MIT",
     "version": "1.0.0",
     "autoload": {
         "psr-4": {
