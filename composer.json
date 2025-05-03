@@ -3,7 +3,7 @@
     "description": "NATS transport for Symfony applications",
     "type": "library",
     "license": "MIT",
-    "version": "1.0.0",
+    "version": "1.0.3",
     "autoload": {
         "psr-4": {
             "GraffishLabs\\SymfonyNatsTransport\\": "src/"
