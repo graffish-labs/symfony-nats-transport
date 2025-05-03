@@ -45,11 +45,12 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
     public function __construct(#[\SensitiveParameter] string $dsn, SerializerInterface $serializer, array $options = [])
     {
         $this->serializer = $serializer;
-        $this->buildFromDsn($dsn, $options);
+        $this->prepareFromDsn($dsn, $options);
     }
 
     public function send(Envelope $envelope): Envelope
     {
+        $this->buildStream();
         $uuid = (string) Uuid::v4();
         $envelope = $envelope->with(new TransportMessageIdStamp($uuid));
         try {
@@ -64,6 +65,7 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
 
     public function get(): iterable
     {
+        $this->buildConsumer();
         $messages = $this->queue->fetchAll($this->configuration['batching']);
         $envelopes = [];
 
@@ -125,7 +127,29 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
         return $receivedStamp;
     }
 
-    protected function buildFromDsn(#[\SensitiveParameter] string $dsn, array $options = []): void
+    protected function buildStream() {
+        $stream = $this->client->getApi()->getStream($this->streamName);
+        $stream->getConfiguration()->setRetentionPolicy(RetentionPolicy::WORK_QUEUE)
+            ->setSubjects([$this->streamName.".*"]);
+        $stream->createIfNotExists();
+        $this->stream = $stream;
+    }
+
+    protected function buildConsumer()
+    {
+        $this->buildStream();
+        $consumer = $this->stream->getConsumer($this->topic);
+        $consumer->getConfiguration()->setSubjectFilter($this->streamName.".".$this->topic);
+        $consumer->setBatching($this->configuration['batching']);
+        if(!$consumer->exists()) {
+            $consumer->create();
+        }
+        $this->consumer = $consumer;
+        $this->queue = $consumer->getQueue();
+        $this->queue->setTimeout($this->configuration['delay']);
+    }
+
+    protected function prepareFromDsn(#[\SensitiveParameter] string $dsn, array $options = []): void
     {
         if (false === $components = parse_url($dsn)) {
             throw new InvalidArgumentException('The given NATS DSN is invalid.');
@@ -160,29 +184,13 @@ class NatsTransport implements TransportInterface, MessageCountAwareInterface
             $clientConnectionSettings['user'] = $components['user'];
             $clientConnectionSettings['pass'] = $components['pass'];
         }
+
         $this->streamName = end($explodedDsn);
         $this->topic = $options['transport_name'];
-        $nastConfig = new Configuration($clientConnectionSettings);
-        $nastConfig->setDelay(floatval($configuration['delay']));
-        $client = new Client($nastConfig);
 
-        $stream = $client->getApi()->getStream($this->streamName);
-        $stream->getConfiguration()->setRetentionPolicy(RetentionPolicy::WORK_QUEUE)
-            ->setSubjects([$this->streamName.".".$this->topic]);
-        $stream->createIfNotExists();
-
-        $consumer = $stream->createEphemeralConsumer(new ConsumerConfiguration(
-            stream: $this->streamName,
-            name: $this->topic,
-        ));
-        $consumer->getConfiguration()->setSubjectFilter($this->streamName.".".$this->topic);
-        $consumer->setBatching($configuration['batching']);
-        
-        $this->consumer = $consumer;
-        $this->client = $client;
-        $this->stream = $stream;
+        $natsConfig = new Configuration($clientConnectionSettings);
+        $natsConfig->setDelay(floatval($configuration['delay']));
+        $this->client = new Client($natsConfig);
         $this->configuration = $configuration;
-        $this->queue = $consumer->getQueue();
-        $this->queue->setTimeout($this->configuration['delay']);
     }
 }
